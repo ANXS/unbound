@@ -1,0 +1,6 @@
+# {{ansible_managed}}
+{% if unbound_resolv_search|length > 0 %}
+search {% for domain in unbound_resolv_search %}{{domain}} {% endfor %}
+{% endif %}
+
+nameserver 127.0.0.1

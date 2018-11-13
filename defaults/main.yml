@@ -1,0 +1,23 @@
+---
+unbound_config_file: "/etc/unbound/unbound.conf"
+unbound_log_file: "/var/log/unbound.log"
+unbound_syslog: no
+unbound_user: "unbound"
+unbound_group: "unbound"
+unbound_pidfile: "/var/run/unbound.pid"
+unbound_acl:
+  - network: "127.0.0.1/8"
+unbound_interfaces:
+  - "127.0.0.1"
+unbound_verbosity: 0
+unbound_port: 53
+unbound_udp_listen: yes
+unbound_tcp_listen: yes
+unbound_directory: "/var/lib/unbound"
+unbound_forward_zones: []
+unbound_forward_default: no
+unbound_forward_default_addresses: []
+unbound_private_domains: []
+unbound_service: yes
+unbound_resolv: no
+unbound_resolv_search: []

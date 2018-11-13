@@ -1,0 +1,45 @@
+# Core unbound configuration
+# {{ansible_managed}}
+{# seemingly empty lines are important; forcing j2 newlines #}
+server:
+    logfile: "{{unbound_log_file}}"
+    log-time-ascii: yes
+    use-syslog: {% if unbound_syslog %}yes{% else %}no{% endif %}
+
+    pidfile: "{{unbound_pidfile}}"
+    hide-version: yes
+    hide-identity: yes
+    hide-trustanchor: yes
+    verbosity: {{unbound_verbosity}}
+    port: {{unbound_port}}
+    username: "{{unbound_user}}"
+    directory: "{{unbound_directory}}"
+    do-udp: {% if unbound_udp_listen %}yes{% else %}no{% endif %}
+
+    do-tcp: {% if unbound_tcp_listen %}yes{% else %}no{% endif %}
+
+{% for domain in unbound_private_domains %}
+{{'    '}}private-domain: {{domain}}
+{% endfor %}
+{% for forward in unbound_forward_zones %}
+{{'    '}}private-domain: {{forward.name}}
+{% endfor %}
+{% for acl in unbound_acl %}
+{{'    '}}access-control: {{acl.network}} {{acl.permission|default('allow')}}
+{% endfor %}
+{% for interface in unbound_interfaces %}
+{{'    '}}interface: {{interface}}
+{% endfor %}
+{% for address in unbound_private_addresses %}
+{{'    '}}private-address: {{address}}
+{% endfor %}
+{% if unbound_forward_default %}
+forward-zone:
+    name: "."
+{% for address in unbound_forward_default_addresses %}
+{{'    '}}forward-addr: "{{address}}"
+{% endfor %}
+{% endif %}
+{% if unbound_forward_zones|length > 0 %}
+include: "{{unbound_forwards_file}}"
+{% endif %}

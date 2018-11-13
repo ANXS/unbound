@@ -1,0 +1,9 @@
+# Unbound forward zones
+# {{ansible_managed}}
+{% for forward in unbound_forward_zones %}
+forward-zone:
+    name: "{{forward.name}}"
+{% for address in forward.addresses %}
+{{'    '}}forward-addr: "{{address}}"
+{% endfor %}
+{% endfor %}

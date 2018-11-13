@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  author: Jonathan Freedman
+  company: ANXS
+  description: "Install and configure unbound DNS"
+  min_ansible_version: 2.3
+  license: MIT
+  platforms:
+  - name: Ubuntu
+    versions:
+    - all
+  categories:
+    - system
+    - network
+    - dns

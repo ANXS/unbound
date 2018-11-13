@@ -1,0 +1,69 @@
+---
+- name: "install unbound package"
+  apt:
+    pkg: "unbound"
+    state: "present"
+- name: "ensure user exists"
+  user:
+    name: "{{unbound_user}}"
+    group: "{{unbound_group}}"
+    comment: "System user for unbound service"
+    create_home: false
+    home: "{{unbound_directory}}"
+    shell: "/bin/false"
+    state: "present"
+# this allows the creation of new directories but does
+# not overwrite existing system level folders
+- name: "check for unbound directories"
+  stat:
+    path: "{{item}}"
+  with_items: "{{unbound_directories|unique}}"
+  register: unbound_directories_check
+- name: "create unbound directories"
+  file:
+    path: "{{item}}"
+    state: directory
+    owner: "{{unbound_user}}"
+    group: "{{unbound_group}}"
+    mode: "0770"
+  with_items: "{{unbound_directories_check.results}}"
+  when: not item.stat.exists
+- name: "ensure log file exists with proper perms"
+  file:
+    path: "{{unbound_log_file}}"
+    owner: "{{unbound_user}}"
+    group: "{{unbound_group}}"
+    mode: "0660"
+    state: "touch"
+- name: "generate forward zones"
+  template:
+    src: "unbound-forwards.conf.j2"
+    dest: "{{unbound_forwards_file}}"
+    owner: "{{unbound_user}}"
+    group: "{{unbound_group}}"
+    mode: "0660"
+    validate: "unbound-checkconf %s"
+  notify: "reload unbound"
+  when: "unbound_forward_zones|length > 0"
+- name: "generate configuration"
+  template:
+    src: "unbound.conf.j2"
+    dest: "{{unbound_config_file}}"
+    owner: "{{unbound_user}}"
+    group: "{{unbound_group}}"
+    mode: "0660"
+    validate: "unbound-checkconf %s"
+  notify: "reload unbound"
+- name: "update resolvconf"
+  template:
+    src: "resolv.conf.j2"
+    dest: "/etc/resolv.conf"
+    owner: "root"
+    group: "root"
+    mode: "0664"
+  when: unbound_resolv
+- name: "ensure unbound is running"
+  service:
+    name: "unbound"
+    enabled: "yes"
+    state: "started"
