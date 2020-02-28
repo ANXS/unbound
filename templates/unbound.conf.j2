@@ -9,7 +9,9 @@ server:
     pidfile: "{{unbound_pidfile}}"
     hide-version: yes
     hide-identity: yes
+{% if not unbound_compat_14 %}
     hide-trustanchor: yes
+{% endif %}
     verbosity: {{unbound_verbosity}}
     port: {{unbound_port}}
     username: "{{unbound_user}}"
