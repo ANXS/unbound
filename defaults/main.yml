@@ -1,7 +1,7 @@
 ---
 unbound_config_file: "/etc/unbound/unbound.conf"
 unbound_log_file: "/var/log/unbound.log"
-unbound_syslog: no
+unbound_syslog: false
 unbound_user: "unbound"
 unbound_group: "unbound"
 unbound_pidfile: "/var/run/unbound.pid"
@@ -11,15 +11,21 @@ unbound_interfaces:
   - "127.0.0.1"
 unbound_verbosity: 0
 unbound_port: 53
-unbound_udp_listen: yes
-unbound_tcp_listen: yes
+unbound_udp_listen: true
+unbound_tcp_listen: true
+unbound_do_not_query_localhost: true
+unbound_ipv6: false
 unbound_directory: "/var/lib/unbound"
 unbound_forward_zones: []
-unbound_forward_default: no
+unbound_forward_default: false
 unbound_forward_default_addresses: []
 unbound_private_domains: []
-unbound_service: yes
-unbound_resolv: no
+unbound_service: true
+unbound_resolv: false
 unbound_resolv_search: []
 
-unbound_compat_14: no
+unbound_compat_14: false
+unbound_root_hints_fetch: false
+unbound_root_hints_url: "http://www.internic.net/domain/named.root"
+unbound_prefetch: false
+unbound_rrset_roundrobin: false

@@ -11,3 +11,4 @@ unbound_directories:
   - "{{unbound_directory}}"
   - "{{unbound_config_file|dirname}}"
   - "{{unbound_extras_directory}}"
+unbound_root_hints_file: "{{unbound_config_file|dirname}}/root.hints"

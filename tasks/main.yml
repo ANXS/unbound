@@ -35,6 +35,14 @@
     group: "{{unbound_group}}"
     mode: "0660"
     state: "touch"
+- name: "download root hints"
+  get_url:
+    url: "{{unbound_root_hints_url}}"
+    dest: "{{unbound_root_hints_file}}"
+    owner: "{{unbound_user}}"
+    group: "{{unbound_group}}"
+    mode: "0660"
+  when: unbound_root_hints_fetch
 - name: "generate forward zones"
   template:
     src: "unbound-forwards.conf.j2"
@@ -45,6 +53,12 @@
     validate: "unbound-checkconf %s"
   notify: "reload unbound"
   when: "unbound_forward_zones|length > 0"
+- name: "remove forward zones"
+  file:
+    path: "{{unbound_forwards_file}}"
+    state: "absent"
+  when: unbound_forward_zones|length == 0
+  notify: "reload unbound"
 - name: "generate configuration"
   template:
     src: "unbound.conf.j2"

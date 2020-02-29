@@ -16,9 +16,21 @@ server:
     port: {{unbound_port}}
     username: "{{unbound_user}}"
     directory: "{{unbound_directory}}"
+    do-ipv6: {% if unbound_ipv6 %}yes{% else %}no{% endif %}
+
     do-udp: {% if unbound_udp_listen %}yes{% else %}no{% endif %}
 
     do-tcp: {% if unbound_tcp_listen %}yes{% else %}no{% endif %}
+
+    do-not-query-localhost: {% if unbound_do_not_query_localhost %}yes{% else %}no{% endif %}
+
+    prefetch: {% if unbound_prefetch %}yes{% else %}no{% endif %}
+
+    rrset-roundrobin: {% if unbound_rrset_roundrobin %}yes{% else %}no{% endif %}
+
+{% if unbound_root_hints_fetch %}
+    root-file: {{unbound_root_hints_file}}
+{% endif %}
 
 {% for domain in unbound_private_domains %}
 {{'    '}}private-domain: {{domain}}
