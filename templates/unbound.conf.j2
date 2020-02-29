@@ -11,12 +11,16 @@ server:
     hide-identity: yes
 {% if not unbound_compat_14 %}
     hide-trustanchor: yes
+{% if unbound_root_hints_fetch %}
+    root-file: {{unbound_root_hints_file}}
+{% endif %}
 {% endif %}
     verbosity: {{unbound_verbosity}}
     port: {{unbound_port}}
     username: "{{unbound_user}}"
     directory: "{{unbound_directory}}"
-    do-ipv6: {% if unbound_ipv6 %}yes{% else %}no{% endif %}
+
+    do-ip6: {% if unbound_ipv6 %}yes{% else %}no{% endif %}
 
     do-udp: {% if unbound_udp_listen %}yes{% else %}no{% endif %}
 
@@ -27,10 +31,6 @@ server:
     prefetch: {% if unbound_prefetch %}yes{% else %}no{% endif %}
 
     rrset-roundrobin: {% if unbound_rrset_roundrobin %}yes{% else %}no{% endif %}
-
-{% if unbound_root_hints_fetch %}
-    root-file: {{unbound_root_hints_file}}
-{% endif %}
 
 {% for domain in unbound_private_domains %}
 {{'    '}}private-domain: {{domain}}
