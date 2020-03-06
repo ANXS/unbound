@@ -12,3 +12,8 @@ unbound_directories:
   - "{{unbound_config_file|dirname}}"
   - "{{unbound_extras_directory}}"
 unbound_root_hints_file: "{{unbound_config_file|dirname}}/root.hints"
+unbound_config_files:
+  - "dns"
+  - "network"
+  - "server"
+unbound_config_file: "{{unbound_config_directory}}/unbound.conf"

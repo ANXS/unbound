@@ -1,0 +1,17 @@
+# {{ansible_managed}} anxs-unbound network configuration
+{# seemingly empty lines are important; forcing j2 newlines #}
+server:
+    port: {{unbound_port}}
+
+    do-ip6: {% if unbound_ipv6 %}yes{% else %}no{% endif %}
+
+    do-udp: {% if unbound_udp_listen %}yes{% else %}no{% endif %}
+
+    do-tcp: {% if unbound_tcp_listen %}yes{% else %}no{% endif %}
+
+{% for interface in unbound_interfaces %}
+{{'    '}}interface: {{interface}}
+{% endfor %}
+{% for acl in unbound_acl %}
+{{'    '}}access-control: {{acl.network}} {{acl.permission|default('allow')}}
+{% endfor %}

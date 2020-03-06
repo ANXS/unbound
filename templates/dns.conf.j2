@@ -1,0 +1,30 @@
+# {{ansible_managed}} anxs-unbound dns configuration
+{# seemingly empty lines are important; forcing j2 newlines #}
+server:
+    hide-version: yes
+    hide-identity: yes
+{% if not unbound_compat_14 %}
+    hide-trustanchor: yes
+{% if unbound_root_hints_fetch %}
+    root-file: {{unbound_root_hints_file}}
+{% endif %}
+{% endif %}
+    do-not-query-localhost: {% if unbound_do_not_query_localhost %}yes{% else %}no{% endif %}
+
+    prefetch: {% if unbound_prefetch %}yes{% else %}no{% endif %}
+
+    rrset-roundrobin: {% if unbound_rrset_roundrobin %}yes{% else %}no{% endif %}
+
+{% for domain in unbound_private_domains %}
+{{'    '}}private-domain: {{domain}}
+{% endfor %}
+{% for address in unbound_private_addresses %}
+{{'    '}}private-address: {{address}}
+{% endfor %}
+{% if unbound_forward_default %}
+forward-zone:
+    name: "."
+{% for address in unbound_forward_default_addresses %}
+{{'    '}}forward-addr: "{{address}}"
+{% endfor %}
+{% endif %}

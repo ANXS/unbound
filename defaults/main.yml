@@ -1,5 +1,5 @@
 ---
-unbound_config_file: "/etc/unbound/unbound.conf"
+unbound_config_directory: "/etc/unbound"
 unbound_log_file: "/var/log/unbound.log"
 unbound_syslog: false
 unbound_user: "unbound"

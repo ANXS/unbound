@@ -43,31 +43,7 @@
     group: "{{unbound_group}}"
     mode: "0660"
   when: unbound_root_hints_fetch
-- name: "generate forward zones"
-  template:
-    src: "unbound-forwards.conf.j2"
-    dest: "{{unbound_forwards_file}}"
-    owner: "{{unbound_user}}"
-    group: "{{unbound_group}}"
-    mode: "0660"
-    validate: "unbound-checkconf %s"
-  notify: "reload unbound"
-  when: "unbound_forward_zones|length > 0"
-- name: "remove forward zones"
-  file:
-    path: "{{unbound_forwards_file}}"
-    state: "absent"
-  when: unbound_forward_zones|length == 0
-  notify: "reload unbound"
-- name: "generate configuration"
-  template:
-    src: "unbound.conf.j2"
-    dest: "{{unbound_config_file}}"
-    owner: "{{unbound_user}}"
-    group: "{{unbound_group}}"
-    mode: "0660"
-    validate: "unbound-checkconf %s"
-  notify: "reload unbound"
+- include: "config.yml"
 - name: "update resolvconf"
   template:
     src: "resolv.conf.j2"
@@ -81,3 +57,14 @@
     name: "unbound"
     enabled: "yes"
     state: "started"
+  register: unbound_started
+- name: "reload unbound"
+  service:
+    name: "unbound"
+    state: "reloaded"
+  when: >
+    not unbound_started.changed and
+    (unbound_forward_zones.changed or
+    remove_unbound_forward_zones.changed or
+    unbound_config.changed or
+    unbound_sub_configs.changed)
