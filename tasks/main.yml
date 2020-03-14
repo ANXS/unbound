@@ -43,6 +43,21 @@
     group: "{{unbound_group}}"
     mode: "0660"
   when: unbound_root_hints_fetch
+# this file needs to exist in order to validate configs on first run
+# so if it's not there, we make sure it is
+- name: "check for root.key"
+  stat:
+    path: "{{unbound_root_key}}"
+  register: unbound_root_key_stat
+- name: "copy root.key if required"
+  copy:
+    src: "{{unbound_root_key_src}}"
+    dest: "{{unbound_root_key}}"
+    owner: "{{unbound_user}}"
+    group: "{{unbound_group}}"
+    mode: "0644"
+    remote_src: true
+  when: not unbound_root_key_stat.stat.exists|default(False)
 - include: "config.yml"
 - name: "update resolvconf"
   template:

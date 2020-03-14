@@ -3,6 +3,7 @@ server:
     logfile: "{{unbound_log_file}}"
     log-time-ascii: yes
     use-syslog: {% if unbound_syslog %}yes{% else %}no{% endif %}
+
     pidfile: "{{unbound_pidfile}}"
     verbosity: {{unbound_verbosity}}
     username: "{{unbound_user}}"
