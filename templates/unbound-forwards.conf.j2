@@ -1,5 +1,11 @@
-# Unbound forward zones
-# {{ansible_managed}}
+# {{ansible_managed}} anxs-unbound forwards
+{% if unbound_forward_zones|length > 0 %}
+server:
+{% for forward in unbound_forward_zones %}
+{{'    '}}private-domain: {{forward.name}}
+{% endfor %}
+{% endif %}
+
 {% for forward in unbound_forward_zones %}
 forward-zone:
     name: "{{forward.name}}"

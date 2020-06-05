@@ -35,25 +35,30 @@
     group: "{{unbound_group}}"
     mode: "0660"
     state: "touch"
-- name: "generate forward zones"
-  template:
-    src: "unbound-forwards.conf.j2"
-    dest: "{{unbound_forwards_file}}"
+- name: "download root hints"
+  get_url:
+    url: "{{unbound_root_hints_url}}"
+    dest: "{{unbound_root_hints_file}}"
     owner: "{{unbound_user}}"
     group: "{{unbound_group}}"
     mode: "0660"
-    validate: "unbound-checkconf %s"
-  notify: "reload unbound"
-  when: "unbound_forward_zones|length > 0"
-- name: "generate configuration"
-  template:
-    src: "unbound.conf.j2"
-    dest: "{{unbound_config_file}}"
+  when: unbound_root_hints_fetch
+# this file needs to exist in order to validate configs on first run
+# so if it's not there, we make sure it is
+- name: "check for root.key"
+  stat:
+    path: "{{unbound_root_key}}"
+  register: unbound_root_key_stat
+- name: "copy root.key if required"
+  copy:
+    src: "{{unbound_root_key_src}}"
+    dest: "{{unbound_root_key}}"
     owner: "{{unbound_user}}"
     group: "{{unbound_group}}"
-    mode: "0660"
-    validate: "unbound-checkconf %s"
-  notify: "reload unbound"
+    mode: "0644"
+    remote_src: true
+  when: not unbound_root_key_stat.stat.exists|default(False)
+- include: "config.yml"
 - name: "update resolvconf"
   template:
     src: "resolv.conf.j2"
@@ -67,3 +72,14 @@
     name: "unbound"
     enabled: "yes"
     state: "started"
+  register: unbound_started
+- name: "reload unbound"
+  service:
+    name: "unbound"
+    state: "reloaded"
+  when: >
+    not unbound_started.changed and
+    (unbound_forward_zones.changed or
+    remove_unbound_forward_zones.changed or
+    unbound_config.changed or
+    unbound_sub_configs.changed)

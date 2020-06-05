@@ -3,7 +3,7 @@ galaxy_info:
   author: Jonathan Freedman
   company: ANXS
   description: "Install and configure unbound DNS"
-  min_ansible_version: 2.3
+  min_ansible_version: 2.7.2
   license: MIT
   platforms:
   - name: Ubuntu
