@@ -3,6 +3,7 @@
   apt:
     pkg: "unbound"
     state: "present"
+
 - name: "ensure user exists"
   user:
     name: "{{unbound_user}}"
@@ -12,6 +13,7 @@
     home: "{{unbound_directory}}"
     shell: "/bin/false"
     state: "present"
+
 # this allows the creation of new directories but does
 # not overwrite existing system level folders
 - name: "check for unbound directories"
@@ -19,6 +21,7 @@
     path: "{{item}}"
   with_items: "{{unbound_directories|unique}}"
   register: unbound_directories_check
+
 - name: "create unbound directories"
   file:
     path: "{{item}}"
@@ -28,6 +31,7 @@
     mode: "0770"
   with_items: "{{unbound_directories_check.results}}"
   when: not item.stat.exists
+
 - name: "ensure log file exists with proper perms"
   file:
     path: "{{unbound_log_file}}"
@@ -35,6 +39,7 @@
     group: "{{unbound_group}}"
     mode: "0660"
     state: "touch"
+
 - name: "download root hints"
   get_url:
     url: "{{unbound_root_hints_url}}"
@@ -45,10 +50,12 @@
   when: unbound_root_hints_fetch
 # this file needs to exist in order to validate configs on first run
 # so if it's not there, we make sure it is
+
 - name: "check for root.key"
   stat:
     path: "{{unbound_root_key}}"
   register: unbound_root_key_stat
+
 - name: "copy root.key if required"
   copy:
     src: "{{unbound_root_key_src}}"
@@ -58,7 +65,9 @@
     mode: "0644"
     remote_src: true
   when: not unbound_root_key_stat.stat.exists|default(False)
-- include: "config.yml"
+
+- include_tasks: "config.yml"
+
 - name: "update resolvconf"
   template:
     src: "resolv.conf.j2"
@@ -67,12 +76,14 @@
     group: "root"
     mode: "0664"
   when: unbound_resolv
+
 - name: "ensure unbound is running"
   service:
     name: "unbound"
     enabled: "yes"
     state: "started"
   register: unbound_started
+
 - name: "reload unbound"
   service:
     name: "unbound"
