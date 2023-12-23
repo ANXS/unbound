@@ -3,34 +3,37 @@
   template:
     src: "unbound-forwards.conf.j2"
     dest: "{{unbound_forwards_file}}"
-    owner: "{{unbound_user}}"
+    owner: "root"
     group: "{{unbound_group}}"
     mode: "0660"
     validate: "unbound-checkconf %s"
   register: unbound_forward_zones
   when: "unbound_forward_zones|length > 0"
+
 - name: "remove forward zones"
   file:
     path: "{{unbound_forwards_file}}"
     state: "absent"
   when: unbound_forward_zones|length == 0
   register: remove_unbound_forward_zones
+
 - name: "generate configuration"
   template:
     src: "unbound.conf.j2"
     dest: "{{unbound_config_file}}"
-    owner: "{{unbound_user}}"
+    owner: "root"
     group: "{{unbound_group}}"
-    mode: "0660"
+    mode: "0644"
     validate: "unbound-checkconf %s"
   register: unbound_config
+
 - name: "generate sub configurations"
   template:
     src: "{{item}}.conf.j2"
     dest: "{{unbound_config_directory}}/unbound.conf.d/{{item}}.conf"
-    owner: "{{unbound_user}}"
+    owner: "root"
     group: "{{unbound_group}}"
-    mode: "0660"
+    mode: "0644"
     validate: "unbound-checkconf %s"
   with_items: "{{unbound_config_files}}"
   register: unbound_sub_configs
