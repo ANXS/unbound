@@ -17,6 +17,15 @@
   when: unbound_forward_zones|length == 0
   register: remove_unbound_forward_zones
 
+- name: "check for existing control key"
+  stat:
+    path: "{{unbound_config_directory}}/unbound_server.key"
+  register: unbound_control_key
+
+- name: "unbound-control setup"
+  command: "unbound-control-setup"
+  when: not unbound_control_key.stat.exists
+
 - name: "generate configuration"
   template:
     src: "unbound.conf.j2"

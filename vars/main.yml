@@ -1,4 +1,7 @@
 ---
+unbound_packages:
+  - "unbound"
+  - "dns-root-data"
 unbound_private_addresses:
   - "127.0.0.1/8"
   - "192.168.0.0/16"
@@ -7,7 +10,6 @@ unbound_private_addresses:
 unbound_extras_directory: "{{unbound_config_file|dirname}}/unbound.conf.d"
 unbound_forwards_file: "{{unbound_extras_directory}}/10-forwards.conf"
 unbound_directories:
-  - "{{unbound_log_file|dirname}}"
   - "{{unbound_directory}}"
   - "{{unbound_config_file|dirname}}"
   - "{{unbound_extras_directory}}"

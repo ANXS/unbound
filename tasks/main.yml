@@ -1,8 +1,9 @@
 ---
-- name: "install unbound package"
+- name: "install unbound package and deps"
   apt:
-    pkg: "unbound"
+    pkg: "{{ item }}"
     state: "present"
+  loop: "{{unbound_packages}}"
 
 - name: "ensure user exists"
   user:
@@ -31,14 +32,6 @@
     mode: "0770"
   with_items: "{{unbound_directories_check.results}}"
   when: not item.stat.exists
-
-- name: "ensure log file exists with proper perms"
-  file:
-    path: "{{unbound_log_file}}"
-    owner: "{{unbound_user}}"
-    group: "{{unbound_group}}"
-    mode: "0660"
-    state: "touch"
 
 - name: "download root hints"
   get_url:
@@ -76,6 +69,12 @@
     group: "root"
     mode: "0664"
   when: unbound_resolv
+
+- name: "disable unbound-resolvconf helper"
+  systemd_service:
+    name: "unbound-resolvconf"
+    masked: true
+    enabled: false
 
 - name: "ensure unbound is running"
   service:
