@@ -1,0 +1,301 @@
+---
+- name: "Converge"
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    unbound_role_dir: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+    # Must match molecule/default/prepare.yml, including the zone suffix --
+    # see the note there before changing it.
+    stub_zone_allowed: "allowed.molecule.example.com"
+    stub_answer_allowed: "192.168.77.7"
+    stub_port: 5353
+    unbound_forwards_path: "/etc/unbound/unbound.conf.d/10-forwards.conf"
+    unbound_probe_name: "host.allowed.molecule.example.com"
+
+  tasks:
+    # ------------------------------------------------------------------
+    # Phase 0 -- reject a local resolver with no loopback listener.
+    # ------------------------------------------------------------------
+    - name: "Phase 0 -- reject an unreachable local resolver"
+      vars:
+        unbound_resolv: true
+        unbound_interfaces:
+          - "192.0.2.53"
+      block:
+        - name: "Apply the role without a loopback listener"
+          ansible.builtin.include_role:
+            name: "{{ unbound_role_dir | basename }}"
+
+        - name: "Fail if the invalid resolver configuration was accepted"
+          ansible.builtin.fail:
+            msg: >-
+              The role accepted unbound_resolv=true without binding
+              127.0.0.1.
+      rescue:
+        - name: "Assert the loopback-listener preflight caused the failure"
+          ansible.builtin.assert:
+            that:
+              - >-
+                'requires loopback interface 127.0.0.1'
+                in ansible_failed_result.msg
+            fail_msg: >-
+              The invalid local-resolver configuration failed for the wrong
+              reason: {{ ansible_failed_result.msg | default('no message') }}
+            quiet: true
+
+    # ------------------------------------------------------------------
+    # Phase 1 -- forwarding on.
+    #
+    # BLOCK vars (precedence 16), not include_role params (20): a param
+    # outranks a register (19), so the obvious way to write this scenario
+    # would pass whether or not the role clobbers its own input.
+    # ------------------------------------------------------------------
+    - name: "Phase 1 -- apply the role with a forward zone"
+      vars:
+        unbound_insecure_domains:
+          - "molecule.example.com"
+        unbound_forward_zones:
+          - name: "{{ stub_zone_allowed }}"
+            addresses:
+              - "{{ ansible_default_ipv4.address }}@{{ stub_port }}"
+      block:
+        - name: "Apply the role with forwarding configured"
+          ansible.builtin.include_role:
+            name: "{{ unbound_role_dir | basename }}"
+
+        - name: "Phase 1 -- stat the forwards file"
+          ansible.builtin.stat:
+            path: "{{ unbound_forwards_path }}"
+          register: unbound_phase1_stat
+
+        - name: "Phase 1 -- resolve the forwarded name"
+          ansible.builtin.command:
+            argv:
+              - "dig"
+              - "+short"
+              - "+time=2"
+              - "+tries=2"
+              - "@127.0.0.1"
+              - "{{ unbound_probe_name }}"
+              - "A"
+          changed_when: false
+          register: unbound_phase1_dig
+
+        - name: "Phase 1 -- assert forwarding is configured AND answering"
+          ansible.builtin.assert:
+            that:
+              - unbound_phase1_stat.stat.exists
+              - stub_answer_allowed in unbound_phase1_dig.stdout
+            fail_msg: >-
+              With a forward zone configured, unbound must resolve
+              {{ unbound_probe_name }} to {{ stub_answer_allowed }}.
+              File present: {{ unbound_phase1_stat.stat.exists }}.
+              dig returned: {{ unbound_phase1_dig.stdout | default('') }}
+            quiet: true
+
+    # ------------------------------------------------------------------
+    # Phase 2 -- forwarding off. THE regression test: an empty list must
+    # actually delete the forwards file, not leave stale forwarding behind.
+    # ------------------------------------------------------------------
+    - name: "Phase 2 -- apply the role with forwarding removed"
+      vars:
+        unbound_insecure_domains:
+          - "molecule.example.com"
+        unbound_forward_zones: []
+      block:
+        # Pre-flight, BEFORE the role runs: a clobbered input otherwise
+        # surfaces as an attribute error from inside the forwards template,
+        # which names neither the variable nor the precedence rule at fault.
+        - name: "Phase 2 -- assert this block's value survived to the role"
+          ansible.builtin.assert:
+            that:
+              - unbound_forward_zones is iterable
+              - unbound_forward_zones is not mapping
+              - unbound_forward_zones is not string
+              - unbound_forward_zones | length == 0
+            fail_msg: >-
+              This block set unbound_forward_zones to [], but it now
+              resolves to {{ unbound_forward_zones }}. An earlier phase
+              registered a task result under that name. Registered
+              variables sit at precedence 19 and block vars at 16, so the
+              register wins for the rest of the play and the role never
+              sees the value the caller set.
+            quiet: true
+
+        - name: "Apply the role with an empty forward zone list"
+          ansible.builtin.include_role:
+            name: "{{ unbound_role_dir | basename }}"
+
+        - name: "Phase 2 -- stat the forwards file"
+          ansible.builtin.stat:
+            path: "{{ unbound_forwards_path }}"
+          register: unbound_phase2_stat
+
+        - name: "Phase 2 -- assert the forwards file is gone"
+          ansible.builtin.assert:
+            that:
+              - not unbound_phase2_stat.stat.exists
+            fail_msg: >-
+              unbound_forward_zones was set to [] and
+              {{ unbound_forwards_path }} still exists. The removal task
+              did not run. Check whether anything in tasks/config.yml
+              registers a result under the name `unbound_forward_zones`:
+              registered variables sit at precedence 19 and Ansible
+              registers one even for a SKIPPED task, so the removal
+              condition ends up measuring a dict instead of the list.
+            quiet: true
+
+        - name: "Phase 2 -- confirm unbound is still up"
+          ansible.builtin.command:
+            argv: ["systemctl", "is-active", "unbound"]
+          changed_when: false
+          register: unbound_phase2_active
+
+        # Keeps the response header rather than using `+short`, which prints
+        # an empty string for NXDOMAIN, NODATA, SERVFAIL and a dead resolver
+        # alike -- so the negative assertion below would also pass if the
+        # query never reached unbound at all.
+        - name: "Phase 2 -- resolve the no-longer-forwarded name"
+          ansible.builtin.command:
+            argv:
+              - "dig"
+              - "+nocmd"
+              - "+noall"
+              - "+comments"
+              - "+answer"
+              - "+time=2"
+              - "+tries=2"
+              - "@127.0.0.1"
+              - "{{ unbound_probe_name }}"
+              - "A"
+          changed_when: false
+          failed_when: false
+          register: unbound_phase2_dig
+
+        # Any rcode except the stub's address is a pass: NXDOMAIN and
+        # SERVFAIL both mean the query stopped going to the stub, and
+        # requiring a specific one would make this depend on the runner
+        # reaching the root servers. The rc gate is the positive control --
+        # dig exits non-zero when it gets no reply at all.
+        - name: "Phase 2 -- assert the stub answer is no longer returned"
+          ansible.builtin.assert:
+            that:
+              - unbound_phase2_active.stdout | trim == 'active'
+              - unbound_phase2_dig.rc == 0
+              - stub_answer_allowed not in unbound_phase2_dig.stdout
+            fail_msg: >-
+              After removing the forward zone, unbound is
+              "{{ unbound_phase2_active.stdout | trim }}" and dig exited
+              {{ unbound_phase2_dig.rc }} with
+              "{{ unbound_phase2_dig.stdout | default('') }}". Either the
+              file removal did not trigger a reload, or the resolver stopped
+              answering when forwarding was withdrawn.
+            quiet: true
+
+    # ------------------------------------------------------------------
+    # Phase 3 -- forwarding back on. Proves the cycle is repeatable, not
+    # one-way.
+    # ------------------------------------------------------------------
+    - name: "Phase 3 -- re-apply the role with the forward zone restored"
+      vars:
+        unbound_insecure_domains:
+          - "molecule.example.com"
+        unbound_forward_zones:
+          - name: "{{ stub_zone_allowed }}"
+            addresses:
+              - "{{ ansible_default_ipv4.address }}@{{ stub_port }}"
+      block:
+        - name: "Phase 3 -- assert this block's value survived to the role"
+          ansible.builtin.assert:
+            that:
+              - unbound_forward_zones is iterable
+              - unbound_forward_zones is not mapping
+              - unbound_forward_zones is not string
+              - unbound_forward_zones | length == 1
+              - unbound_forward_zones[0].name == stub_zone_allowed
+            fail_msg: >-
+              This block restored unbound_forward_zones, but it now
+              resolves to {{ unbound_forward_zones }}. See the note in
+              phase 2: a register under this name outranks block vars for
+              the remainder of the play.
+            quiet: true
+
+        - name: "Apply the role with forwarding restored"
+          ansible.builtin.include_role:
+            name: "{{ unbound_role_dir | basename }}"
+
+        - name: "Phase 3 -- resolve the forwarded name again"
+          ansible.builtin.command:
+            argv:
+              - "dig"
+              - "+short"
+              - "+time=2"
+              - "+tries=2"
+              - "@127.0.0.1"
+              - "{{ unbound_probe_name }}"
+              - "A"
+          changed_when: false
+          register: unbound_phase3_dig
+
+        - name: "Phase 3 -- assert forwarding resumed"
+          ansible.builtin.assert:
+            that:
+              - stub_answer_allowed in unbound_phase3_dig.stdout
+            fail_msg: >-
+              Forwarding did not come back after being removed. dig
+              returned: {{ unbound_phase3_dig.stdout | default('') }}
+            quiet: true
+
+    # ------------------------------------------------------------------
+    # Phase 4 -- add a listener after unbound is already running.
+    # unbound.conf(5): interface changes are not applied by SIGHUP, so a
+    # successful reload leaves the old sockets live.
+    # ------------------------------------------------------------------
+    - name: "Phase 4 -- apply a new listener address"
+      vars:
+        unbound_insecure_domains:
+          - "molecule.example.com"
+        unbound_forward_zones:
+          - name: "{{ stub_zone_allowed }}"
+            addresses:
+              - "{{ ansible_default_ipv4.address }}@{{ stub_port }}"
+        unbound_interfaces:
+          - "127.0.0.1"
+          - "192.0.2.53"
+        unbound_acl:
+          - network: "127.0.0.1/8"
+          - network: "192.0.2.53/32"
+      block:
+        - name: "Add the test listener address"
+          ansible.builtin.command:
+            argv: ["ip", "address", "add", "192.0.2.53/32", "dev", "lo"]
+          changed_when: true
+
+        - name: "Apply the role with an additional listener"
+          ansible.builtin.include_role:
+            name: "{{ unbound_role_dir | basename }}"
+
+        - name: "Resolve through the newly added listener"
+          ansible.builtin.command:
+            argv:
+              - "dig"
+              - "+short"
+              - "+time=2"
+              - "+tries=2"
+              - "@192.0.2.53"
+              - "{{ unbound_probe_name }}"
+              - "A"
+          changed_when: false
+          register: unbound_phase4_dig
+
+        - name: "Assert the listener change became live"
+          ansible.builtin.assert:
+            that:
+              - stub_answer_allowed in unbound_phase4_dig.stdout
+            fail_msg: >-
+              network.conf names 192.0.2.53, but unbound did not answer on
+              that address. Listener changes require a restart; a successful
+              reload leaves the old sockets live. dig returned:
+              {{ unbound_phase4_dig.stdout | default('') }}
+            quiet: true

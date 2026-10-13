@@ -1,7 +1,5 @@
 ---
-unbound_config_file: "/etc/unbound/unbound.conf"
-unbound_log_file: "/var/log/unbound.log"
-unbound_syslog: no
+unbound_config_directory: "/etc/unbound"
 unbound_user: "unbound"
 unbound_group: "unbound"
 unbound_pidfile: "/var/run/unbound.pid"
@@ -11,13 +9,64 @@ unbound_interfaces:
   - "127.0.0.1"
 unbound_verbosity: 0
 unbound_port: 53
-unbound_udp_listen: yes
-unbound_tcp_listen: yes
+unbound_udp_listen: true
+unbound_tcp_listen: true
+unbound_do_not_query_localhost: true
+unbound_ipv6: false
 unbound_directory: "/var/lib/unbound"
+
+# Each entry is {name: <zone>, addresses: [<ip>, ...]}; addresses accept
+# either `IP` or `IP@port`. Set to [] to remove forwarding.
+#
+# Every zone also gets a `private-domain` and a `local-zone ... transparent`
+# line -- see templates/unbound-forwards.conf.j2 for why neither is optional.
 unbound_forward_zones: []
-unbound_forward_default: no
+
+unbound_forward_default: false
 unbound_forward_default_addresses: []
 unbound_private_domains: []
-unbound_service: yes
-unbound_resolv: no
+
+# `private-address`: ranges unbound REFUSES to return for any zone not also
+# declared a private-domain. Rebind protection, and the most common reason a
+# correct-looking forward zone returns an empty NOERROR.
+#
+# Site policy rather than a derived constant, so it belongs in defaults where
+# a group_vars override still wins -- role vars (precedence 15) would outrank
+# one, silently, on the variable that DISCARDS answers.
+unbound_private_addresses:
+  - "127.0.0.1/8"
+  - "192.168.0.0/16"
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+
+# `domain-insecure`: zones exempt from DNSSEC validation. Needed when
+# forwarding an internal zone whose parent is signed but which has no DS
+# record of its own, which unbound cannot prove insecure and so SERVFAILs.
+# Not for papering over a validation failure on a genuinely signed zone.
+unbound_insecure_domains: []
+
+# When false the role renders configuration but does not enable, start,
+# or redirect the system resolver at unbound. Useful for building an
+# image whose resolver should only come up on first boot.
+unbound_service: true
+
+unbound_resolv: false
+
+# SET THIS if the host relies on short names. resolv.conf.j2 replaces
+# /etc/resolv.conf wholesale and only emits `search` when this is non-empty,
+# so enabling unbound_resolv with it empty drops whatever search domains
+# DHCP or cloud-init supplied. FQDNs keep resolving, so the symptom is bare
+# hostnames failing. `domain` and `options` lines go the same way.
 unbound_resolv_search: []
+
+unbound_root_hints_fetch: false
+# Keep this HTTPS: the root hints are the bootstrap trust for every
+# recursive lookup the host makes.
+unbound_root_hints_url: "https://www.internic.net/domain/named.root"
+unbound_prefetch: false
+unbound_rrset_roundrobin: false
+
+# Floor TTL-zero answers long enough to absorb reconnect bursts. Leave at zero
+# by default to preserve authoritative TTL semantics unless a caller has
+# measured a broken zero-TTL source.
+unbound_cache_min_ttl: 0

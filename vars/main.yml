@@ -1,13 +1,19 @@
 ---
-unbound_private_addresses:
-  - "127.0.0.1/8"
-  - "192.168.0.0/16"
-  - "10.0.0.0/8"
-  - "172.16.0.0/12"
-unbound_extras_directory: "{{unbound_config_file|dirname}}/unbound.conf.d"
-unbound_forwards_file: "{{unbound_extras_directory}}/10-forwards.conf"
+unbound_packages:
+  - "unbound"
+  - "dns-root-data"
+unbound_extras_directory: "{{ unbound_config_file | dirname }}/unbound.conf.d"
+unbound_forwards_file: "{{ unbound_extras_directory }}/10-forwards.conf"
 unbound_directories:
-  - "{{unbound_log_file|dirname}}"
-  - "{{unbound_directory}}"
-  - "{{unbound_config_file|dirname}}"
-  - "{{unbound_extras_directory}}"
+  - "{{ unbound_directory }}"
+  - "{{ unbound_config_file | dirname }}"
+  - "{{ unbound_extras_directory }}"
+unbound_root_hints_file: "{{ unbound_config_file | dirname }}/root.hints"
+unbound_config_files:
+  - "dns"
+  - "network"
+  - "server"
+unbound_config_file: "{{ unbound_config_directory }}/unbound.conf"
+
+unbound_root_key: "/var/lib/unbound/root.key"
+unbound_root_key_src: "/usr/share/dns/root.key"
