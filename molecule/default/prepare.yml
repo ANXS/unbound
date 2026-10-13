@@ -1,0 +1,230 @@
+---
+- name: "Prepare"
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    # Fixtures live under example.com (RFC 2606). Do NOT move them under
+    # .invalid/.test/.local/.localhost: unbound ships built-in local-zones
+    # for those and consults them BEFORE forward-zones, so a correct forward
+    # zone gets an authoritative NXDOMAIN from unbound itself. example.com is
+    # also signed, which is what exercises unbound_insecure_domains against a
+    # genuinely signed parent.
+    stub_zone_allowed: "allowed.molecule.example.com"
+    stub_zone_blocked: "blocked.molecule.example.com"
+
+    # Deliberately under `.test`, one of those built-in zones: this fixture
+    # is the only proof that the role emits `local-zone: ... transparent`.
+    # Same class as the AS112 RFC1918 reverse zones, which is the case a real
+    # consumer hits when forwarding internal PTR lookups.
+    stub_zone_shadowed: "shadowed.test"
+    # Deliberately RFC1918: private-address drops answers in these ranges for
+    # any zone not also declared a private-domain, so a public-address
+    # fixture would pass whether or not the role got that pairing right.
+    stub_answer_allowed: "192.168.77.7"
+    stub_answer_blocked: "192.168.77.8"
+    # TEST-NET-3 (RFC 5737), deliberately NOT RFC1918: a private answer here
+    # would also fail whenever the private-domain pairing broke, making this
+    # fixture a superset of `allowed` instead of an orthogonal test of the
+    # local-zone transparent property.
+    stub_answer_shadowed: "203.0.113.9"
+    stub_port: 5353
+    # Served over file:// so unbound_root_hints_fetch can be exercised
+    # without reaching the real root-hints URL.
+    stub_root_hints_path: "/var/tmp/molecule-root.hints"
+  tasks:
+    - name: "Early apt-get update"
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    # Docker bind-mounts /etc/resolv.conf into the container, and the
+    # role rewrites that path when unbound_resolv is set. Replacing a
+    # bind-mounted file is not a rename, so leaving the mount in place
+    # tests Ansible's atomic_move fallback rather than testing this role.
+    # Detach it here and put the original contents back, so the container
+    # keeps Docker's resolver until the role deliberately changes it.
+    - name: "Detach /etc/resolv.conf from the Docker bind mount"
+      ansible.builtin.shell: |
+        set -eu
+        if mountpoint -q /etc/resolv.conf; then
+          cp /etc/resolv.conf /tmp/resolv.conf.molecule-orig
+          umount /etc/resolv.conf
+          cat /tmp/resolv.conf.molecule-orig > /etc/resolv.conf
+          echo detached
+        else
+          echo "already a plain file"
+        fi
+      register: stub_resolv_detach
+      changed_when: "'detached' in stub_resolv_detach.stdout"
+
+    # Then make it a symlink, the way systemd-resolved leaves it on a real
+    # host. Without this the test asserting resolv.conf is NOT a symlink
+    # cannot fail -- nothing else in the fixture creates one. The link target
+    # carries the original nameserver, so a role that wrote through the link
+    # instead of replacing it still resolves and fails on the assertion
+    # rather than on a broken harness.
+    - name: "Make /etc/resolv.conf a systemd-resolved style symlink"
+      ansible.builtin.shell: |
+        set -eu
+        mkdir -p /run/systemd/resolve
+        if [ ! -L /etc/resolv.conf ]; then
+          cp /etc/resolv.conf /run/systemd/resolve/stub-resolv.conf
+          ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+          echo linked
+        else
+          echo "already a symlink"
+        fi
+      register: stub_resolv_link
+      changed_when: "'linked' in stub_resolv_link.stdout"
+
+    # The stub's listen address and the forward-addr both come from this
+    # fact. On a container with no default IPv4 route it is an empty dict,
+    # and the failure would otherwise surface as an undefined attribute deep
+    # inside a Jinja template.
+    - name: "Assert the container has a routable address for the stub"
+      ansible.builtin.assert:
+        that:
+          - ansible_default_ipv4.address is defined
+          - ansible_default_ipv4.address | length > 0
+        fail_msg: >-
+          HARNESS failure: no ansible_default_ipv4.address on this container,
+          so the stub resolver has nowhere to listen and the forward zone has
+          no target. Check the docker network, not the role.
+        quiet: true
+
+    # Minimal root hints so unbound_root_hints_fetch can be exercised without
+    # outbound network. Standard published root-server data; two is enough to
+    # parse.
+    - name: "Write a local root hints file"
+      ansible.builtin.copy:
+        dest: "{{ stub_root_hints_path }}"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        content: |
+          .                        3600000  NS   a.root-servers.net.
+          a.root-servers.net.      3600000  A    198.41.0.4
+          a.root-servers.net.      3600000  AAAA 2001:503:ba3e::2:30
+          .                        3600000  NS   b.root-servers.net.
+          b.root-servers.net.      3600000  A    170.247.170.2
+          b.root-servers.net.      3600000  AAAA 2801:1b8:10::b
+
+    # Ubuntu 20.04 has no bind9-dnsutils; it still ships the client tools as
+    # `dnsutils`.
+    - name: "Install a DNS client for the verifier"
+      ansible.builtin.apt:
+        name: >-
+          {{
+            'dnsutils'
+            if (ansible_distribution == 'Ubuntu'
+                and ansible_distribution_major_version | int < 22)
+            else 'bind9-dnsutils'
+          }}
+        state: "present"
+
+    # dnsmasq-base, not dnsmasq: the -base package ships the binary
+    # without a service unit, so installing it cannot race unbound for
+    # port 53. The stub runs from the unit written below, on a high port.
+    - name: "Install the stub resolver binary"
+      ansible.builtin.apt:
+        name: "dnsmasq-base"
+        state: "present"
+
+    # The stub listens on the container's routable address rather than
+    # loopback ON PURPOSE. The role defaults to
+    # `do-not-query-localhost: yes`, so a stub on 127.0.0.1 could only be
+    # reached by overriding that default -- and then the scenario would
+    # be testing a configuration no real host runs.
+    - name: "Write the stub resolver unit"
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/molecule-stub-dns.service"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Molecule stub authoritative resolver
+          After=network.target
+
+          [Service]
+          ExecStart=/usr/sbin/dnsmasq --keep-in-foreground \
+            --port={{ stub_port }} \
+            --listen-address={{ ansible_default_ipv4.address }} \
+            --bind-interfaces --no-resolv --no-hosts \
+            --address=/{{ stub_zone_allowed }}/{{ stub_answer_allowed }} \
+            --address=/{{ stub_zone_blocked }}/{{ stub_answer_blocked }} \
+            --address=/{{ stub_zone_shadowed }}/{{ stub_answer_shadowed }}
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      register: stub_unit
+
+    - name: "Start the stub resolver"
+      ansible.builtin.systemd_service:
+        name: "molecule-stub-dns"
+        daemon_reload: true
+        enabled: true
+        state: "{{ 'restarted' if stub_unit is changed else 'started' }}"
+
+    # The verifier needs to ask the stub directly, as a positive control for
+    # the negative "blocked zone" test. testinfra has no access to Ansible
+    # facts, so hand it the address through a file rather than making it
+    # guess an interface name.
+    - name: "Publish the stub address for the verifier"
+      ansible.builtin.copy:
+        dest: "/var/tmp/molecule-stub-addr"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        content: "{{ ansible_default_ipv4.address }}"
+
+    - name: "Wait for the stub resolver to listen"
+      ansible.builtin.wait_for:
+        host: "{{ ansible_default_ipv4.address }}"
+        port: "{{ stub_port }}"
+        timeout: 30
+
+    # Prove the HARNESS works before the role is applied; otherwise a broken
+    # stub and a broken role produce the same red verify run. Every fixture
+    # zone, not just one: nothing downstream requires the stub to answer for
+    # `blocked`, so a dropped --address line there would silently disarm the
+    # negative test.
+    - name: "Confirm the stub answers for every fixture zone"
+      ansible.builtin.command:
+        argv:
+          - "dig"
+          - "+short"
+          - "+time=2"
+          - "+tries=2"
+          - "@{{ ansible_default_ipv4.address }}"
+          - "-p"
+          - "{{ stub_port }}"
+          - "host.{{ item.zone }}"
+          - "A"
+      changed_when: false
+      register: stub_selftest
+      loop:
+        - zone: "{{ stub_zone_allowed }}"
+          answer: "{{ stub_answer_allowed }}"
+        - zone: "{{ stub_zone_blocked }}"
+          answer: "{{ stub_answer_blocked }}"
+        - zone: "{{ stub_zone_shadowed }}"
+          answer: "{{ stub_answer_shadowed }}"
+      loop_control:
+        label: "{{ item.zone }}"
+
+    - name: "Assert every stub fixture is armed"
+      ansible.builtin.assert:
+        that:
+          - item.item.answer in item.stdout
+        fail_msg: >-
+          The stub resolver did not answer host.{{ item.item.zone }} with
+          {{ item.item.answer }}. This is a HARNESS failure, not a role
+          failure -- nothing has applied the role yet. dig said:
+          {{ item.stdout | default('') }} {{ item.stderr | default('') }}
+        quiet: true
+      loop: "{{ stub_selftest.results }}"
+      loop_control:
+        label: "{{ item.item.zone }}"

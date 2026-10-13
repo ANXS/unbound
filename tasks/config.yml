@@ -1,48 +1,75 @@
 ---
-- name: "generate forward zones"
-  template:
+# Forward zones live in their OWN file rather than in the templated
+# sub-configs, because they are the one piece of config a caller adds and
+# REMOVES. Removal is a file deletion, not a re-render.
+#
+# Do not `register:` anything named after a role variable in this file.
+# Ansible registers a result even for a SKIPPED task, at precedence 19,
+# which silently shadows the caller's own input and makes the `length == 0`
+# removal test below unreachable.
+- name: "Generate forward zones"
+  ansible.builtin.template:
     src: "unbound-forwards.conf.j2"
-    dest: "{{unbound_forwards_file}}"
+    dest: "{{ unbound_forwards_file }}"
     owner: "root"
-    group: "{{unbound_group}}"
-    mode: "0660"
+    group: "{{ unbound_group }}"
+    mode: "0644"
     validate: "unbound-checkconf %s"
-  register: unbound_forward_zones
-  when: "unbound_forward_zones|length > 0"
+  when: unbound_forward_zones | length > 0
+  notify: "Reload unbound"
 
-- name: "remove forward zones"
-  file:
-    path: "{{unbound_forwards_file}}"
+- name: "Remove forward zones"
+  ansible.builtin.file:
+    path: "{{ unbound_forwards_file }}"
     state: "absent"
-  when: unbound_forward_zones|length == 0
-  register: remove_unbound_forward_zones
+  when: unbound_forward_zones | length == 0
+  notify: "Reload unbound"
 
-- name: "check for existing control key"
-  stat:
-    path: "{{unbound_config_directory}}/unbound_server.key"
-  register: unbound_control_key
+# `-d` is required: unbound-control-setup otherwise writes to its
+# compile-time default directory, so under an overridden
+# unbound_config_directory the `creates:` guard would watch a path the
+# command never writes -- regenerating the control keypair every converge
+# and breaking unbound-control against the running daemon.
+- name: "Set up unbound-control keys"
+  ansible.builtin.command:
+    argv:
+      - "unbound-control-setup"
+      - "-d"
+      - "{{ unbound_config_directory }}"
+    creates: "{{ unbound_config_directory }}/unbound_server.key"
 
-- name: "unbound-control setup"
-  command: "unbound-control-setup"
-  when: not unbound_control_key.stat.exists
-
-- name: "generate configuration"
-  template:
+- name: "Generate configuration"
+  ansible.builtin.template:
     src: "unbound.conf.j2"
-    dest: "{{unbound_config_file}}"
+    dest: "{{ unbound_config_file }}"
     owner: "root"
-    group: "{{unbound_group}}"
+    group: "{{ unbound_group }}"
     mode: "0644"
     validate: "unbound-checkconf %s"
-  register: unbound_config
+  notify: "Reload unbound"
 
-- name: "generate sub configurations"
-  template:
-    src: "{{item}}.conf.j2"
-    dest: "{{unbound_config_directory}}/unbound.conf.d/{{item}}.conf"
+# Most configuration can be applied with SIGHUP. Listener addresses cannot:
+# unbound.conf(5) explicitly says interfaces are unchanged on reload and take
+# effect only on restart. Render network.conf separately so adding/removing an
+# interface does not leave a valid config on disk with the old sockets live.
+- name: "Generate reloadable sub configurations"
+  ansible.builtin.template:
+    src: "{{ item }}.conf.j2"
+    dest: "{{ unbound_extras_directory }}/{{ item }}.conf"
     owner: "root"
-    group: "{{unbound_group}}"
+    group: "{{ unbound_group }}"
     mode: "0644"
     validate: "unbound-checkconf %s"
-  with_items: "{{unbound_config_files}}"
-  register: unbound_sub_configs
+  loop: "{{ unbound_config_files | reject('equalto', 'network') | list }}"
+  notify: "Reload unbound"
+
+- name: "Generate listener configuration"
+  ansible.builtin.template:
+    src: "network.conf.j2"
+    dest: "{{ unbound_extras_directory }}/network.conf"
+    owner: "root"
+    group: "{{ unbound_group }}"
+    mode: "0644"
+    validate: "unbound-checkconf %s"
+  register: unbound_listener_config
+  notify: "Restart unbound"

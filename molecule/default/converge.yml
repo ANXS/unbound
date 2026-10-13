@@ -1,0 +1,86 @@
+---
+- name: "Converge"
+  hosts: all
+  become: true
+  gather_facts: true
+
+  # PLAY vars (precedence 12), not include_role params (20), and that is
+  # load bearing: a param outranks a register (19), so a role that registers
+  # over its own input variable would stay invisible to this scenario. Play
+  # vars are what make the assertion at the bottom able to fail.
+  vars:
+    unbound_role_dir: "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') }}"
+    # Must match molecule/default/prepare.yml and tests/test_unbound.py.
+    # Read the comment in prepare.yml before changing the zone: names
+    # under .invalid/.test/.local are shadowed by unbound's built-in
+    # local-zones and never reach a forwarder.
+    stub_zone_allowed: "allowed.molecule.example.com"
+    # Under `.test`, one of unbound's built-in local zones. Forwarding it
+    # only works because the role emits `local-zone: ... transparent`.
+    stub_zone_shadowed: "shadowed.test"
+    # Served by the stub but NOT forwarded -- see unbound_private_domains
+    # below for why this play has to know about it.
+    stub_zone_blocked: "blocked.molecule.example.com"
+    stub_port: 5353
+
+    unbound_resolv: true
+    # The dnsmasq fixture answers with TTL 0, so this exercises the cache
+    # floor the option exists for.
+    unbound_cache_min_ttl: 30
+    # example.com is signed, the forwarded child has no DS of its own,
+    # and the stub serves it unsigned -- so unbound cannot prove the zone
+    # insecure and SERVFAILs a forward zone that is otherwise entirely
+    # correct. Same shape as forwarding an internal zone under a signed
+    # parent, which is the real deployment case.
+    unbound_insecure_domains:
+      - "molecule.example.com"
+      # `.test` is not in the root zone, so unbound cannot fetch an NSEC
+      # proof of insecurity for it without reaching the real root. Listed
+      # here so this scenario does not depend on CI having outbound DNS.
+      - "shadowed.test"
+    unbound_forward_zones:
+      - name: "{{ stub_zone_allowed }}"
+        addresses:
+          - "{{ ansible_default_ipv4.address }}@{{ stub_port }}"
+      - name: "{{ stub_zone_shadowed }}"
+        addresses:
+          - "{{ ansible_default_ipv4.address }}@{{ stub_port }}"
+
+    # Declared private-domain WITHOUT a forward zone, deliberately: it is
+    # what lets the "blocked" test fail. Without it, an over-broad forward
+    # zone would reach the stub and private-address would strip the answer,
+    # leaving the negative test green while forwarding went global.
+    unbound_private_domains:
+      - "{{ stub_zone_blocked }}"
+
+    # Exercises the root-hints path. file:// keeps the scenario hermetic;
+    # the fixture is written by prepare.yml.
+    unbound_root_hints_fetch: true
+    unbound_root_hints_url: "file://{{ stub_root_hints_path }}"
+    stub_root_hints_path: "/var/tmp/molecule-root.hints"
+
+  tasks:
+    - name: "Apply the role as a forwarding resolver"
+      ansible.builtin.include_role:
+        name: "{{ unbound_role_dir | basename }}"
+
+    # Catches a `register:` over one of the role's own input variables at
+    # source. The behavioural half -- that [] actually removes forwarding --
+    # needs two converges and lives in the `forwards` scenario.
+    - name: "Assert the role did not clobber its own input variable"
+      ansible.builtin.assert:
+        that:
+          - unbound_forward_zones is iterable
+          - unbound_forward_zones is not mapping
+          - unbound_forward_zones is not string
+          - unbound_forward_zones | length == 2
+          - unbound_forward_zones[0].name == stub_zone_allowed
+          - unbound_forward_zones[1].name == stub_zone_shadowed
+        fail_msg: >-
+          After applying the role, unbound_forward_zones is no longer the
+          list this play set. Something in the role registers a result
+          under that name; registered variables sit at precedence 19 and
+          shadow every normal way of setting it. The visible symptom is
+          that `unbound_forward_zones: []` stops removing stale forwarding.
+          Value is now: {{ unbound_forward_zones }}
+        quiet: true

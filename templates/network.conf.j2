@@ -1,7 +1,7 @@
-# {{ansible_managed}} anxs-unbound network configuration
+# {{ ansible_managed }} anxs-unbound network configuration
 {# seemingly empty lines are important; forcing j2 newlines #}
 server:
-    port: {{unbound_port}}
+    port: {{ unbound_port }}
 
     do-ip6: {% if unbound_ipv6 %}yes{% else %}no{% endif %}
 
@@ -10,10 +10,13 @@ server:
     do-tcp: {% if unbound_tcp_listen %}yes{% else %}no{% endif %}
 
 {% for acl in unbound_acl %}
-{{'    '}}access-control: {{acl.network}} {{acl.permission|default('allow')}}
+{{ '    ' }}access-control: {{ acl.network }} {{ acl.permission | default('allow') }}
 {% endfor %}
 
+{# 127.0.0.1 is unconditional: this role points /etc/resolv.conf at
+   127.0.0.1 when unbound_resolv is set, so losing the loopback
+   interface would leave the host with no resolver at all. #}
     interface: 127.0.0.1
 {% for interface in unbound_interfaces if interface != '127.0.0.1' %}
-    interface: {{interface}}
+    interface: {{ interface }}
 {% endfor %}

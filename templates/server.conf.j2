@@ -1,9 +1,10 @@
-# {{ansible_managed}} anxs-unbound server configuration
+# {{ ansible_managed }} anxs-unbound server configuration
 server:
-    pidfile: "{{unbound_pidfile}}"
-    verbosity: {{unbound_verbosity}}
-    username: "{{unbound_user}}"
-    directory: "{{unbound_directory}}"
+    pidfile: "{{ unbound_pidfile }}"
+    verbosity: {{ unbound_verbosity }}
+    username: "{{ unbound_user }}"
+    directory: "{{ unbound_directory }}"
+    cache-min-ttl: {{ unbound_cache_min_ttl }}
 
 remote-control:
     control-enable: yes

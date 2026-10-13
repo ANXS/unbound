@@ -1,15 +1,30 @@
-# {{ansible_managed}} anxs-unbound forwards
-{% if unbound_forward_zones|length > 0 %}
+# {{ ansible_managed }} anxs-unbound forwards
+{# Two server-clause lines accompany every forward zone; neither is optional,
+   and both guard a forward zone that is valid but never consulted or never
+   believed.
+
+   private-domain -- without it, private-address rebind protection drops the
+   RFC1918 answers an internal resolver returns. Symptom: NOERROR, no answer.
+
+   local-zone transparent -- unbound's built-in local zones are consulted
+   BEFORE forward zones (they include the AS112 RFC1918 reverse zones), so a
+   shadowed forward zone is answered authoritatively by unbound itself.
+   Symptom: NXDOMAIN with `aa` set. Emitted on the caller's zone, which
+   unbound.conf(5) prescribes for a subzone and which is a no-op where
+   nothing shadows -- so no built-in list has to be kept in sync here.
+#}
+{% if unbound_forward_zones | length > 0 %}
 server:
 {% for forward in unbound_forward_zones %}
-{{'    '}}private-domain: {{forward.name}}
+{{ '    ' }}private-domain: {{ forward.name }}
+{{ '    ' }}local-zone: "{{ forward.name }}." transparent
 {% endfor %}
 {% endif %}
 
 {% for forward in unbound_forward_zones %}
 forward-zone:
-    name: "{{forward.name}}"
+    name: "{{ forward.name }}"
 {% for address in forward.addresses %}
-{{'    '}}forward-addr: "{{address}}"
+{{ '    ' }}forward-addr: "{{ address }}"
 {% endfor %}
 {% endfor %}

@@ -1,0 +1,4 @@
+---
+# Imported rather than copied so the two scenarios cannot drift.
+- name: "Prepare"
+  ansible.builtin.import_playbook: "../default/prepare.yml"

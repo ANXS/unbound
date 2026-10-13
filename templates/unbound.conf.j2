@@ -1,3 +1,6 @@
-# {{ansible_managed}} anxs-unbound base configuration
+# {{ ansible_managed }} anxs-unbound base configuration
+{# Everything real lives in the drop-in directory. This file is only the
+   include, so a caller can add its own fragment without this role
+   having to know about it. #}
 
-include: "/etc/unbound/unbound.conf.d/*.conf"
+include: "{{ unbound_extras_directory }}/*.conf"
