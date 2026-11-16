@@ -1,5 +1,19 @@
 ---
-- name: "reload unbound"
-  service:
+# Listener addresses are not applied by SIGHUP; unbound.conf(5) requires a
+# restart. This handler is notified only by network.conf.
+- name: "Restart unbound"
+  ansible.builtin.service:
+    name: "unbound"
+    state: "restarted"
+  when: unbound_service
+
+# Ordinary DNS configuration keeps the lower-impact reload path. When a run
+# changes both network.conf and another config file, the restart above has
+# already applied everything; skip the redundant reload.
+- name: "Reload unbound"
+  ansible.builtin.service:
     name: "unbound"
     state: "reloaded"
+  when:
+    - unbound_service
+    - not (unbound_listener_config.changed | default(false))

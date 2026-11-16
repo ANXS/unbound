@@ -1,0 +1,22 @@
+# Core testing framework
+molecule>=25.9.0
+molecule-plugins[docker]>=23.5.0
+
+# Ansible ecosystem
+#
+# Floor is ansible 10 (ansible-core 2.17), the release that introduced
+# ansible.builtin.systemd_service -- see meta/main.yml.
+# Ceiling is ansible 12 (core 2.19), which drops managed-node support
+# for the Python 3.8 that Ubuntu 20.04 ships.
+ansible>=10.0.0,<12
+ansible-lint>=6.22.0
+
+# Python testing
+pytest>=7.4.0
+pytest-testinfra>=10.2.0
+
+# Code quality
+yamllint>=1.35.0
+
+# Docker support
+docker>=6.1.0

@@ -1,69 +1,191 @@
 ---
-- name: "install unbound package"
-  apt:
-    pkg: "unbound"
+# `unbound-checkconf` is a parser, not a health check: it accepts a
+# forward-zone with no forward-addrs and interfaces that are not locally
+# assigned. Each input below passes validation and then leaves the host
+# unable to resolve, so it fails the play before anything is installed.
+- name: "Assert the resolver configuration cannot brick the host"
+  ansible.builtin.assert:
+    that:
+      # resolv.conf has no syntax for a port, so a non-53 port and
+      # unbound_resolv are mutually exclusive.
+      - not (unbound_resolv | bool) or (unbound_port | int) == 53
+      # ACL permission is not enough; unbound must bind the address that
+      # resolv.conf names or every local query times out.
+      - >-
+        not (unbound_resolv | bool)
+        or '127.0.0.1' in unbound_interfaces
+      - (unbound_cache_min_ttl | int) >= 0
+      - (unbound_cache_min_ttl | int) <= 86400
+      # An empty forward-zone parses clean and `forward-first` defaults to
+      # no, so there is no fallback to recursion: every query SERVFAILs.
+      - >-
+        not (unbound_forward_default | bool)
+        or (unbound_forward_default_addresses | length) > 0
+      # Same trap, per zone.
+      - >-
+        unbound_forward_zones
+        | rejectattr('addresses', 'defined')
+        | list | length == 0
+      - >-
+        unbound_forward_zones
+        | selectattr('addresses', 'defined')
+        | selectattr('addresses', 'equalto', [])
+        | list | length == 0
+    fail_msg: >-
+      Refusing to configure a resolver that cannot answer.
+      unbound_resolv={{ unbound_resolv }} requires unbound_port 53 (got
+      {{ unbound_port }}), because /etc/resolv.conf cannot express a port.
+      It also requires loopback interface 127.0.0.1 in unbound_interfaces
+      (got {{ unbound_interfaces }}), because that is the nameserver written
+      to /etc/resolv.conf.
+      unbound_forward_default={{ unbound_forward_default }} requires a
+      non-empty unbound_forward_default_addresses (got
+      {{ unbound_forward_default_addresses }}). Every entry in
+      unbound_forward_zones needs a non-empty `addresses` list (got
+      {{ unbound_forward_zones }}).
+    quiet: true
+
+- name: "Install unbound package and deps"
+  ansible.builtin.apt:
+    name: "{{ unbound_packages }}"
     state: "present"
-- name: "ensure user exists"
-  user:
-    name: "{{unbound_user}}"
-    group: "{{unbound_group}}"
+
+- name: "Ensure user exists"
+  ansible.builtin.user:
+    name: "{{ unbound_user }}"
+    group: "{{ unbound_group }}"
     comment: "System user for unbound service"
     create_home: false
-    home: "{{unbound_directory}}"
+    home: "{{ unbound_directory }}"
     shell: "/bin/false"
     state: "present"
-# this allows the creation of new directories but does
-# not overwrite existing system level folders
-- name: "check for unbound directories"
-  stat:
-    path: "{{item}}"
-  with_items: "{{unbound_directories|unique}}"
+
+# Create missing directories without re-owning existing ones: the unbound
+# package ships /etc/unbound and /var/lib/unbound with its own ownership
+# and modes, which a blanket `file: state=directory` would rewrite.
+- name: "Check for unbound directories"
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ unbound_directories | unique }}"
   register: unbound_directories_check
-- name: "create unbound directories"
-  file:
-    path: "{{item}}"
-    state: directory
-    owner: "{{unbound_user}}"
-    group: "{{unbound_group}}"
+
+- name: "Create unbound directories"
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: "directory"
+    owner: "{{ unbound_user }}"
+    group: "{{ unbound_group }}"
     mode: "0770"
-  with_items: "{{unbound_directories_check.results}}"
+  loop: "{{ unbound_directories_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
   when: not item.stat.exists
-- name: "ensure log file exists with proper perms"
-  file:
-    path: "{{unbound_log_file}}"
-    owner: "{{unbound_user}}"
-    group: "{{unbound_group}}"
-    mode: "0660"
-    state: "touch"
-- name: "generate forward zones"
-  template:
-    src: "unbound-forwards.conf.j2"
-    dest: "{{unbound_forwards_file}}"
-    owner: "{{unbound_user}}"
-    group: "{{unbound_group}}"
-    mode: "0660"
-    validate: "unbound-checkconf %s"
-  notify: "reload unbound"
-  when: "unbound_forward_zones|length > 0"
-- name: "generate configuration"
-  template:
-    src: "unbound.conf.j2"
-    dest: "{{unbound_config_file}}"
-    owner: "{{unbound_user}}"
-    group: "{{unbound_group}}"
-    mode: "0660"
-    validate: "unbound-checkconf %s"
-  notify: "reload unbound"
-- name: "update resolvconf"
-  template:
+
+- name: "Download root hints"
+  ansible.builtin.get_url:
+    url: "{{ unbound_root_hints_url }}"
+    dest: "{{ unbound_root_hints_file }}"
+    owner: "{{ unbound_user }}"
+    group: "{{ unbound_group }}"
+    mode: "0644"
+  when: unbound_root_hints_fetch
+  notify: "Reload unbound"
+
+# unbound-checkconf refuses a config referencing a missing trust anchor, so
+# root.key must exist before the first template task runs its `validate:`.
+- name: "Check for root.key"
+  ansible.builtin.stat:
+    path: "{{ unbound_root_key }}"
+  register: unbound_root_key_stat
+
+- name: "Copy root.key if required"
+  ansible.builtin.copy:
+    src: "{{ unbound_root_key_src }}"
+    dest: "{{ unbound_root_key }}"
+    owner: "{{ unbound_user }}"
+    group: "{{ unbound_group }}"
+    mode: "0644"
+    remote_src: true
+  when: not unbound_root_key_stat.stat.exists
+
+- name: "Render unbound configuration"
+  ansible.builtin.include_tasks: "config.yml"
+
+# The helper rewrites /etc/resolv.conf from DHCP leases, which fights this
+# role whenever `unbound_resolv` is set. Masking implies disabled, and
+# `enabled: false` on a masked unit is an error.
+- name: "Disable unbound-resolvconf helper"
+  ansible.builtin.systemd_service:
+    name: "unbound-resolvconf"
+    masked: true
+
+- name: "Ensure unbound is running"
+  ansible.builtin.service:
+    name: "unbound"
+    enabled: true
+    state: "started"
+  when: unbound_service
+
+# ORDERING IS LOAD BEARING BELOW THIS LINE. Pending reloads land while the
+# host still resolves through its original nameserver, and /etc/resolv.conf
+# is only repointed once unbound is proven to be answering on the config
+# just written. Do not move the resolv.conf task above this flush.
+- name: "Flush handlers before redirecting the system resolver"
+  ansible.builtin.meta: "flush_handlers"
+
+# Liveness has to be proven on THIS side of the flush: `service: started` is
+# a no-op on an already-running daemon, and ExecReload is a bare `kill -HUP`
+# that returns 0 before unbound has re-read anything. Neither notices a
+# config that parses and then fatals on a bind, so without these probes the
+# next task can repoint the system resolver at a dead unbound.
+#
+# The probe also covers listener drift: a previous run that rendered
+# network.conf but only reloaded leaves disk and live sockets out of sync,
+# with no template change left to notify the restart handler.
+- name: "Confirm configured unbound listeners are live"
+  when:
+    - unbound_service
+    - unbound_tcp_listen
+  block:
+    - name: "Probe configured unbound TCP listeners"
+      ansible.builtin.wait_for:
+        host: "{{ item }}"
+        port: "{{ unbound_port | int }}"
+        connect_timeout: 1
+        timeout: 2
+      loop: "{{ (['127.0.0.1'] + unbound_interfaces) | unique }}"
+
+  rescue:
+    - name: "Restart unbound to repair listener drift"
+      ansible.builtin.service:
+        name: "unbound"
+        state: "restarted"
+
+    - name: "Verify configured unbound TCP listeners after repair"
+      ansible.builtin.wait_for:
+        host: "{{ item }}"
+        port: "{{ unbound_port | int }}"
+        connect_timeout: 1
+        timeout: 30
+      loop: "{{ (['127.0.0.1'] + unbound_interfaces) | unique }}"
+
+# Stronger than `systemctl is-active`: this round-trips through the running
+# daemon's control socket, so it fails if unbound died on the HUP or came
+# back wedged. It proves the daemon answers, not that any NAME resolves --
+# end-to-end resolution needs a DNS client the role cannot assume is there.
+- name: "Confirm unbound answers on its control socket after the reload"
+  ansible.builtin.command:
+    argv: ["unbound-control", "status"]
+  changed_when: false
+  when: unbound_service
+
+- name: "Point the system resolver at unbound"
+  ansible.builtin.template:
     src: "resolv.conf.j2"
     dest: "/etc/resolv.conf"
     owner: "root"
     group: "root"
-    mode: "0664"
-  when: unbound_resolv
-- name: "ensure unbound is running"
-  service:
-    name: "unbound"
-    enabled: "yes"
-    state: "started"
+    mode: "0644"
+  when:
+    - unbound_resolv
+    - unbound_service
