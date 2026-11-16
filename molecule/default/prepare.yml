@@ -29,6 +29,11 @@
     # local-zone transparent property.
     stub_answer_shadowed: "203.0.113.9"
     stub_port: 5353
+    # A separate fallback keeps negative-path tests off the real DNS
+    # hierarchy. Its distinct answer proves which upstream handled a query.
+    stub_fallback_port: 5354
+    stub_fallback_answer: "203.0.113.8"
+    stub_fallback_answer_file: "/var/tmp/molecule-fallback-answer"
     # Served over file:// so unbound_root_hints_fetch can be exercised
     # without reaching the real root-hints URL.
     stub_root_hints_path: "/var/tmp/molecule-root.hints"
@@ -37,6 +42,43 @@
       ansible.builtin.apt:
         update_cache: true
         cache_valid_time: 3600
+
+    - name: "Create the included configuration directory"
+      ansible.builtin.file:
+        path: "/etc/unbound/unbound.conf.d"
+        state: "directory"
+        owner: "root"
+        group: "root"
+        mode: "0755"
+
+    - name: "Seed a retired role-managed configuration fragment"
+      ansible.builtin.copy:
+        dest: "/etc/unbound/unbound.conf.d/retired-managed.conf"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        content: |
+          server:
+            hide-identity: yes
+
+    - name: "Seed an unrelated configuration fragment"
+      ansible.builtin.copy:
+        dest: "/etc/unbound/unbound.conf.d/operator.conf"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        content: |
+          server:
+            hide-version: yes
+
+    - name: "Seed the previous role ownership manifest"
+      ansible.builtin.copy:
+        dest: "/etc/unbound/.anxs-unbound-managed-configs.list"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        content: |
+          retired-managed.conf
 
     # Docker bind-mounts /etc/resolv.conf into the container, and the
     # role rewrites that path when unbound_resolv is set. Replacing a
@@ -168,6 +210,38 @@
         enabled: true
         state: "{{ 'restarted' if stub_unit is changed else 'started' }}"
 
+    - name: "Write the fallback resolver unit"
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/molecule-fallback-dns.service"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Molecule fallback resolver
+          After=network.target
+
+          [Service]
+          ExecStart=/usr/sbin/dnsmasq --keep-in-foreground \
+            --port={{ stub_fallback_port }} \
+            --listen-address={{ ansible_facts.default_ipv4.address }} \
+            --bind-interfaces --no-resolv --no-hosts \
+            --address=/{{ stub_zone_allowed }}/{{ stub_fallback_answer }} \
+            --address=/{{ stub_zone_blocked }}/{{ stub_fallback_answer }}
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      register: stub_fallback_unit
+
+    - name: "Start the fallback resolver"
+      ansible.builtin.systemd_service:
+        name: "molecule-fallback-dns"
+        daemon_reload: true
+        enabled: true
+        state: >-
+          {{ 'restarted' if stub_fallback_unit is changed else 'started' }}
+
     # The verifier needs to ask the stub directly, as a positive control for
     # the negative "blocked zone" test. testinfra has no access to Ansible
     # facts, so hand it the address through a file rather than making it
@@ -180,10 +254,24 @@
         mode: "0644"
         content: "{{ ansible_default_ipv4.address }}"
 
+    - name: "Publish the fallback answer for the verifier"
+      ansible.builtin.copy:
+        dest: "{{ stub_fallback_answer_file }}"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        content: "{{ stub_fallback_answer }}"
+
     - name: "Wait for the stub resolver to listen"
       ansible.builtin.wait_for:
         host: "{{ ansible_default_ipv4.address }}"
         port: "{{ stub_port }}"
+        timeout: 30
+
+    - name: "Wait for the fallback resolver to listen"
+      ansible.builtin.wait_for:
+        host: "{{ ansible_facts.default_ipv4.address }}"
+        port: "{{ stub_fallback_port }}"
         timeout: 30
 
     # Prove the HARNESS works before the role is applied; otherwise a broken
@@ -226,5 +314,42 @@
           {{ item.stdout | default('') }} {{ item.stderr | default('') }}
         quiet: true
       loop: "{{ stub_selftest.results }}"
+      loop_control:
+        label: "{{ item.item.zone }}"
+
+    - name: "Confirm the fallback resolver answers every probe zone"
+      ansible.builtin.command:
+        argv:
+          - "dig"
+          - "+short"
+          - "+time=2"
+          - "+tries=2"
+          - "@{{ ansible_facts.default_ipv4.address }}"
+          - "-p"
+          - "{{ stub_fallback_port }}"
+          - "host.{{ item.zone }}"
+          - "A"
+      changed_when: false
+      register: stub_fallback_selftest
+      loop:
+        - zone: "{{ stub_zone_allowed }}"
+          disallowed_answer: "{{ stub_answer_allowed }}"
+        - zone: "{{ stub_zone_blocked }}"
+          disallowed_answer: "{{ stub_answer_blocked }}"
+      loop_control:
+        label: "{{ item.zone }}"
+
+    - name: "Assert every fallback fixture is armed"
+      ansible.builtin.assert:
+        that:
+          - stub_fallback_answer in item.stdout
+          - item.item.disallowed_answer not in item.stdout
+        fail_msg: >-
+          The fallback resolver did not return its distinct answer
+          {{ stub_fallback_answer }} for host.{{ item.item.zone }}.
+          dig said: {{ item.stdout | default('') }}
+          {{ item.stderr | default('') }}
+        quiet: true
+      loop: "{{ stub_fallback_selftest.results }}"
       loop_control:
         label: "{{ item.item.zone }}"

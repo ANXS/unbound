@@ -4,6 +4,8 @@ unbound_packages:
   - "dns-root-data"
 unbound_extras_directory: "{{ unbound_config_file | dirname }}/unbound.conf.d"
 unbound_forwards_file: "{{ unbound_extras_directory }}/10-forwards.conf"
+unbound_managed_config_manifest: >-
+  {{ unbound_config_file | dirname }}/.anxs-unbound-managed-configs.list
 unbound_directories:
   - "{{ unbound_directory }}"
   - "{{ unbound_config_file | dirname }}"

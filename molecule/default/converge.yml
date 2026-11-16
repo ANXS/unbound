@@ -22,6 +22,7 @@
     # below for why this play has to know about it.
     stub_zone_blocked: "blocked.molecule.example.com"
     stub_port: 5353
+    stub_fallback_port: 5354
 
     unbound_resolv: true
     # The dnsmasq fixture answers with TTL 0, so this exercises the cache
@@ -45,6 +46,12 @@
       - name: "{{ stub_zone_shadowed }}"
         addresses:
           - "{{ ansible_default_ipv4.address }}@{{ stub_port }}"
+
+    # Keep names outside the explicit zones on a deterministic local path.
+    # A broadened zone still wins by longest match and reaches the main stub.
+    unbound_forward_default: true
+    unbound_forward_default_addresses:
+      - "{{ ansible_facts.default_ipv4.address }}@{{ stub_fallback_port }}"
 
     # Declared private-domain WITHOUT a forward zone, deliberately: it is
     # what lets the "blocked" test fail. Without it, an over-broad forward

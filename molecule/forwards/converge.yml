@@ -10,6 +10,8 @@
     stub_zone_allowed: "allowed.molecule.example.com"
     stub_answer_allowed: "192.168.77.7"
     stub_port: 5353
+    stub_fallback_port: 5354
+    stub_fallback_answer_file: "/var/tmp/molecule-fallback-answer"
     unbound_forwards_path: "/etc/unbound/unbound.conf.d/10-forwards.conf"
     unbound_probe_name: "host.allowed.molecule.example.com"
 
@@ -103,6 +105,9 @@
         unbound_insecure_domains:
           - "molecule.example.com"
         unbound_forward_zones: []
+        unbound_forward_default: true
+        unbound_forward_default_addresses:
+          - "{{ ansible_facts.default_ipv4.address }}@{{ stub_fallback_port }}"
       block:
         # Pre-flight, BEFORE the role runs: a clobbered input otherwise
         # surfaces as an attribute error from inside the forwards template,
@@ -152,10 +157,8 @@
           changed_when: false
           register: unbound_phase2_active
 
-        # Keeps the response header rather than using `+short`, which prints
-        # an empty string for NXDOMAIN, NODATA, SERVFAIL and a dead resolver
-        # alike -- so the negative assertion below would also pass if the
-        # query never reached unbound at all.
+        # The exact fallback answer proves both resolver liveness and that the
+        # removed explicit zone no longer captures this name.
         - name: "Phase 2 -- resolve the no-longer-forwarded name"
           ansible.builtin.command:
             argv:
@@ -173,24 +176,28 @@
           failed_when: false
           register: unbound_phase2_dig
 
-        # Any rcode except the stub's address is a pass: NXDOMAIN and
-        # SERVFAIL both mean the query stopped going to the stub, and
-        # requiring a specific one would make this depend on the runner
-        # reaching the root servers. The rc gate is the positive control --
-        # dig exits non-zero when it gets no reply at all.
-        - name: "Phase 2 -- assert the stub answer is no longer returned"
+        - name: "Phase 2 -- read the published fallback answer"
+          ansible.builtin.slurp:
+            src: "{{ stub_fallback_answer_file }}"
+          register: unbound_phase2_fallback_answer
+
+        - name: "Phase 2 -- assert the fallback answer is returned"
           ansible.builtin.assert:
             that:
               - unbound_phase2_active.stdout | trim == 'active'
               - unbound_phase2_dig.rc == 0
+              - >-
+                (unbound_phase2_fallback_answer.content | b64decode | trim)
+                in unbound_phase2_dig.stdout
               - stub_answer_allowed not in unbound_phase2_dig.stdout
             fail_msg: >-
-              After removing the forward zone, unbound is
-              "{{ unbound_phase2_active.stdout | trim }}" and dig exited
-              {{ unbound_phase2_dig.rc }} with
-              "{{ unbound_phase2_dig.stdout | default('') }}". Either the
-              file removal did not trigger a reload, or the resolver stopped
-              answering when forwarding was withdrawn.
+              After removing the explicit forward zone, unbound should
+              return the published local fallback answer
+              {{ unbound_phase2_fallback_answer.content | b64decode | trim }}.
+              It is "{{ unbound_phase2_active.stdout | trim }}" and dig
+              exited {{ unbound_phase2_dig.rc }} with
+              "{{ unbound_phase2_dig.stdout | default('') }}". Either stale
+              forwarding captured the query, or the fallback did not load.
             quiet: true
 
     # ------------------------------------------------------------------

@@ -23,10 +23,11 @@ import re
 ALLOWED_ZONE = "allowed.molecule.example.com"
 ALLOWED_ANSWER = "192.168.77.7"
 
-# Served by the same stub, but NOT forwarded. Proves the forward zone is
-# scoped rather than global.
+# Served by both local upstreams with distinct answers. Proves the explicit
+# forward zone is scoped rather than capturing the default path.
 BLOCKED_ZONE = "blocked.molecule.example.com"
 BLOCKED_ANSWER = "192.168.77.8"
+FALLBACK_ANSWER_FILE = "/var/tmp/molecule-fallback-answer"
 
 # Forwarded, and sitting under `.test`, which IS one of unbound's
 # built-in local zones. Built-ins are consulted BEFORE forward zones, so
@@ -42,6 +43,8 @@ SHADOWED_ANSWER = "203.0.113.9"
 
 FORWARDS_FILE = "/etc/unbound/unbound.conf.d/10-forwards.conf"
 MAIN_CONFIG = "/etc/unbound/unbound.conf"
+EXTRAS_DIRECTORY = "/etc/unbound/unbound.conf.d"
+MANAGED_CONFIG_MANIFEST = "/etc/unbound/.anxs-unbound-managed-configs.list"
 
 # Written by prepare.yml. The stub listens on the container's routable
 # address rather than loopback, because the role defaults to
@@ -58,6 +61,16 @@ def stub_address(host):
     assert f.exists, (
         f"HARNESS problem: {STUB_ADDR_FILE} is missing, so no test can ask "
         f"the stub anything directly. prepare.yml should have written it."
+    )
+    return f.content_string.strip()
+
+
+def fallback_answer(host):
+    """The distinct answer prepare.yml assigned to the fallback resolver."""
+    f = host.file(FALLBACK_ANSWER_FILE)
+    assert f.exists, (
+        f"HARNESS problem: {FALLBACK_ANSWER_FILE} is missing, so the verifier "
+        f"cannot identify which upstream answered."
     )
     return f.content_string.strip()
 
@@ -147,6 +160,28 @@ def test_control_key_generated(host):
 
 
 # --- config shape (necessary, not sufficient) ----------------------------
+
+
+def test_retired_managed_fragment_removed(host):
+    """A fragment retired from the role's manifest must stop loading."""
+    assert not host.file(f"{EXTRAS_DIRECTORY}/retired-managed.conf").exists
+
+
+def test_unrelated_fragment_preserved(host):
+    """The role must not purge caller-owned files from the shared directory."""
+    f = host.file(f"{EXTRAS_DIRECTORY}/operator.conf")
+    assert f.exists
+    assert "hide-version: yes" in f.content_string
+
+
+def test_managed_config_manifest_matches_declared_fragments(host):
+    """The manifest and installed files match the role's declared set."""
+    declared = {"dns.conf", "network.conf", "server.conf"}
+    f = host.file(MANAGED_CONFIG_MANIFEST)
+    assert f.exists
+    assert set(f.content_string.splitlines()) == declared
+    for name in declared:
+        assert host.file(f"{EXTRAS_DIRECTORY}/{name}").exists
 
 
 def test_forwards_file_permissions(host):
@@ -276,26 +311,12 @@ def test_forward_zone_under_a_builtin_local_zone_resolves(host):
     )
 
 
-def test_unforwarded_zone_does_not_reach_the_stub(host):
-    """Verify the forward zone is scoped to the name it declares.
+def test_zone_outside_explicit_forward_uses_fallback(host):
+    """Verify the explicit forward zone is scoped to the name it declares.
 
-    The stub answers for this zone too, but the role was never told to
-    forward it, so unbound must not return the stub's address.
-
-    The negative assertion is last and deliberately not alone: on its own,
-    `BLOCKED_ANSWER not in stdout` cannot fail, because a dead resolver or a
-    missing dig also produces an empty string.
-
-    The positive controls, in order:
-      1. the stub really does serve this zone, asked directly -- so the
-         fixture cannot be silently disarmed;
-      2. unbound really did answer us, with a status we recognise -- so a
-         dead resolver fails here instead of passing.
-
-    Any rcode other than the stub's address is a pass. NXDOMAIN (recursion
-    reached the real example.com) and SERVFAIL (no outbound DNS) both mean
-    the query did not go to the stub; asserting one specific rcode would
-    make this depend on whether CI can reach the root.
+    Two local resolvers answer the same name differently. Correct
+    longest-match routing must select the answer published by the fallback;
+    broadening the explicit zone to a parent selects the stub and fails.
     """
     direct = dig(
         host,
@@ -304,26 +325,24 @@ def test_unforwarded_zone_does_not_reach_the_stub(host):
         port=STUB_PORT,
     )
     assert BLOCKED_ANSWER in direct.stdout, (
-        f"HARNESS problem, not a role problem: the stub does not serve "
-        f"{BLOCKED_ZONE}, so this test's trap is disarmed and it would pass "
-        f"no matter what the role did. {dig_report(direct)}"
+        f"HARNESS problem, not a role problem: the explicit-zone stub does "
+        f"not serve {BLOCKED_ZONE}, so this test's trap is disarmed. "
+        f"{dig_report(direct)}"
     )
 
+    expected_fallback = fallback_answer(host)
     result = dig(host, f"host.{BLOCKED_ZONE}")
-    assert result.rc == 0, (
-        f"dig itself failed against unbound, so the negative assertion "
-        f"below would pass on an empty string. {dig_report(result)}"
-    )
-    assert dig_status(result.stdout) in ("NXDOMAIN", "SERVFAIL", "NOERROR"), (
-        f"unbound returned no recognisable status, so it is not answering "
-        f"and this test cannot mean anything. {dig_report(result)}"
+    assert expected_fallback in result.stdout, (
+        f"unbound did not route {BLOCKED_ZONE} to the local fallback "
+        f"({expected_fallback}). "
+        f"The resolver may be down, or the explicit forward zone may have "
+        f"captured a name outside its scope. {dig_report(result)}"
     )
     assert BLOCKED_ANSWER not in result.stdout, (
-        f"unbound returned the stub's answer for {BLOCKED_ZONE}, which is "
-        f"not in unbound_forward_zones. The forward zone is matching more "
-        f"than it declares -- check that the forward-zone name in "
-        f"10-forwards.conf has not been broadened to a parent. "
-        f"{dig_report(result)}"
+        f"unbound returned the explicit-zone stub's answer for "
+        f"{BLOCKED_ZONE}, which is not in unbound_forward_zones. Check that "
+        f"the forward-zone name in 10-forwards.conf has not been broadened "
+        f"to a parent. {dig_report(result)}"
     )
 
 

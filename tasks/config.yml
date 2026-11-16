@@ -48,6 +48,78 @@
     validate: "unbound-checkconf %s"
   notify: "Reload unbound"
 
+- name: "Read managed configuration manifest"
+  ansible.builtin.stat:
+    path: "{{ unbound_managed_config_manifest }}"
+  register: unbound_managed_config_manifest_stat
+
+- name: "Load managed configuration manifest"
+  ansible.builtin.slurp:
+    path: "{{ unbound_managed_config_manifest }}"
+  register: unbound_managed_config_manifest_content
+  when: unbound_managed_config_manifest_stat.stat.exists
+
+- name: "Resolve managed configuration ownership"
+  ansible.builtin.set_fact:
+    unbound_managed_previous_names: >-
+      {{
+        (
+          unbound_managed_config_manifest_content.content
+          | b64decode
+        ).splitlines()
+        | map("trim") | select | list
+        if unbound_managed_config_manifest_stat.stat.exists
+        else []
+      }}
+    unbound_managed_desired_names: >-
+      {{
+        (
+          unbound_config_files
+          | reject("equalto", "network")
+          | list
+          + ["network"]
+        )
+        | map("regex_replace", "$", ".conf")
+        | list
+      }}
+
+- name: "Validate managed configuration names"
+  ansible.builtin.assert:
+    that:
+      - item == item | basename
+      - item is match('^[A-Za-z0-9][A-Za-z0-9_.-]*[.]conf$')
+    fail_msg: >-
+      Managed unbound configuration names must be plain .conf basenames,
+      got {{ item }}.
+    quiet: true
+  loop: >-
+    {{
+      (unbound_managed_previous_names + unbound_managed_desired_names)
+      | unique
+    }}
+
+- name: "Validate unique managed configuration names"
+  ansible.builtin.assert:
+    that:
+      - >-
+        unbound_managed_desired_names | length
+        ==
+        unbound_managed_desired_names | unique | length
+    fail_msg: >-
+      unbound_config_files entries must produce unique .conf basenames.
+    quiet: true
+
+- name: "Remove retired managed configurations"
+  ansible.builtin.file:
+    path: "{{ unbound_extras_directory }}/{{ item }}"
+    state: "absent"
+  loop: >-
+    {{
+      unbound_managed_previous_names
+      | difference(unbound_managed_desired_names)
+    }}
+  notify: "Reload unbound"
+
 # Most configuration can be applied with SIGHUP. Listener addresses cannot:
 # unbound.conf(5) explicitly says interfaces are unchanged on reload and take
 # effect only on restart. Render network.conf separately so adding/removing an
@@ -73,3 +145,11 @@
     validate: "unbound-checkconf %s"
   register: unbound_listener_config
   notify: "Restart unbound"
+
+- name: "Write managed configuration manifest"
+  ansible.builtin.template:
+    src: "managed-configs.list.j2"
+    dest: "{{ unbound_managed_config_manifest }}"
+    owner: "root"
+    group: "root"
+    mode: "0644"
